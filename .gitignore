@@ -1,0 +1,4 @@
+/hand_landmarker.task
+.sim-cache/
+__pycache__/
+/recordings/
