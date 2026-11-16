@@ -2,3 +2,7 @@
 .sim-cache/
 __pycache__/
 /recordings/
+/datasets/
+/outputs/
+/train_v1_with_language_vision_layers/
+/train_v2_with_language_vision_layers/

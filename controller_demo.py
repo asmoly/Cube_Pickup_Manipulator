@@ -10,10 +10,17 @@ import numpy as np
 from cube_sim import make_sim
 
 WINDOW = "SO-101 | Xbox controller"
-MOVE_SPEED = 0.12  # meters per second at full stick
-ROLL_SPEED = np.deg2rad(90)  # radians per second at full stick
+MOVE_SPEED = 0.12  # meters per second
+ROLL_SPEED = np.deg2rad(90)  # radians per second speed of gripper rotation
 READY_POSE = (0, -50, 40, 85, -90, 65) # Starting joint angles
 
+# Sim Notes:
+# Simulator +X points forward from the base, +Y points left, and +Z points up.
+# Controller input:
+#   - Left stick controls movement along xy plane
+#   - Right stick up/down controller height (z)
+#   - Right stick left_right controller gripper rotation
+#   - Right trigger closes and opens the gripper
 
 class Gamepad(ctypes.Structure):
     _fields_ = [
@@ -30,10 +37,12 @@ class ControllerState(ctypes.Structure):
     _fields_ = [("packet", ctypes.c_uint32), ("gamepad", Gamepad)]
 
 def read_controller(get_state):
+    """Returns the current state of the controller"""
     state = ControllerState()
-    for index in range(4):
+    for index in range(4): # Loops through the 4 available controler ports to find the connected one
         if get_state(index, ctypes.byref(state)) == 0:
             return state.gamepad
+        
     return None
 
 def stick(value):
@@ -41,12 +50,11 @@ def stick(value):
     return np.sign(value)*max(0, min(abs(value), 32767) - 8000)/(32767 - 8000)
 
 def move_target(gamepad, target, roll, dt):
-    """Tracks the target pos for the gripper to adjust angles towards"""
-    # Simulator +X points forward from the base, +Y points left, and +Z points up.
-    direction = np.array([stick(gamepad.left_y), -stick(gamepad.left_x), stick(gamepad.right_y)])
-    target = np.clip(target + direction * MOVE_SPEED * dt, (0.10, -0.20, 0.018), (0.34, 0.20, 0.23))
-    roll += stick(gamepad.right_x) * ROLL_SPEED * dt
-    gripper = 65 * (1 - gamepad.right_trigger / 255)
+    """Returns a new target xyz position for the gripper based on controller inputs"""
+    direction = np.array([stick(gamepad.left_y), -stick(gamepad.left_x), stick(gamepad.right_y)]) # Gets the direction vector based on controller input
+    target = np.clip(target + direction*MOVE_SPEED*dt, (0.10, -0.20, 0.018), (0.34, 0.20, 0.23)) # This keeps the target position inside of the designated box
+    roll += stick(gamepad.right_x)*ROLL_SPEED*dt # Sets new target roll
+    gripper = 65*(1 - gamepad.right_trigger/255) # Sets gripper state 
     return target, roll, gripper
 
 
@@ -64,15 +72,18 @@ class GripperIK:
         self.damping = 0.015**2 * np.eye(4)
 
     def tip(self):
-        """Gets grippers x, y, z pos in meters"""
+        """Gets grippers xyz position in meters"""
         return self.world.data.site_xpos[self.site].copy()
 
     def command(self, target, previous, roll, gripper):
-        """Moves arm towards target pos by changing joint angles, tracks previous angles to minimize rapid movements"""
+        """
+        Moves arm towards target pos by changing joint angles, tracks previous angles to minimize rapid movements
+        previous - the previous joint angles of the arm
+        """
         angles = np.deg2rad(previous[:5]).astype(np.float64)
-        angles[4] = roll
-        low, high = self.world.lo[:4], self.world.hi[:4]
-        pitch_weight = 0.06
+        angles[4] = roll # Sets new roll angle
+        low, high = self.world.lo[:4], self.world.hi[:4] # These are the min and max angles for each joint
+        pitch_weight = 0.06 # This is how strongly the solver tries to hold the arm at 75 degree angle
 
         # Inverse kinematics loop
         for _ in range(6):
@@ -98,12 +109,12 @@ def run_demo(env, get_state):
     obs, _ = env.reset(seed=0) # Sets up sim
     ik = GripperIK(env) # Creates the inverse kinematics object
 
-    # Gets current action and x,y,z pos, as well as roll
+    # Gets current action (current joint angles) and x,y,z pos, as well as roll
     action = obs["agent_pos"]
     target = ik.tip()
     roll = np.deg2rad(action[4])
 
-    dt = 1 / env.fps
+    dt = 1/env.fps
     finished = False
 
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
@@ -119,10 +130,10 @@ def run_demo(env, get_state):
         elif gamepad is None:
             status = "Connect an Xbox controller | Q: quit"
         else:
-            target, roll, gripper = move_target(gamepad, target, roll, dt)
-            roll = np.clip(roll, ik.world.lo[4], ik.world.hi[4])
-            action = ik.command(target, action, roll, gripper)
-            obs, _, terminated, truncated, _ = env.step(action)
+            target, roll, gripper = move_target(gamepad, target, roll, dt) # Get new xyz pos
+            roll = np.clip(roll, ik.world.lo[4], ik.world.hi[4]) # Clip the roll to be within the min and max angles
+            action = ik.command(target, action, roll, gripper) # Run inverse kinematics to get new joint angles
+            obs, _, terminated, truncated, _ = env.step(action) # Take a step in the environment
             finished = terminated or truncated
 
         # Rendering
