@@ -15,6 +15,8 @@ STATE = "observation.state"
 
 
 def read_episode(archive):
+    """Opens an episode, checks that all dimensions and important info match, then returns the nessessary info for conversion"""
+    # Loads all episode numerical data
     with np.load(archive, allow_pickle=False) as data:
         state = data[STATE]
         action = data["action"]
@@ -24,8 +26,8 @@ def read_episode(archive):
         units = data["joint_units"].tolist()
         timestamps = data["timestamp"]
 
-    if (state.ndim != 2 or state.shape[1] != 6 or not len(state) or action.shape != state.shape
-            or not np.isfinite(state).all() or not np.isfinite(action).all()):
+    # Runs checks on data (no manipulation)
+    if (state.ndim != 2 or state.shape[1] != 6 or not len(state) or action.shape != state.shape or not np.isfinite(state).all() or not np.isfinite(action).all()):
         raise ValueError(f"{archive}: expected matching finite (frames, 6) state and action arrays.")
     
     if fps <= 0 or not task.strip() or len(names) != 6 or units != ["degrees"] * 5 + ["0-100"]:
@@ -38,31 +40,45 @@ def read_episode(archive):
 
 
 def convert(archives, output):
+    """Joins the numerical values with the camera frames, we are using the LeRobot dataset"""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     counts = Counter()
     dataset = None
-    output.parent.mkdir(parents=True, exist_ok=True)
+    output.parent.mkdir(parents=True, exist_ok=True) # Create output directory for new dataset
+
     # Publish the output folder only after all recordings have passed validation.
     with TemporaryDirectory(prefix=".convert-", dir=output.parent) as temp:
         staged = Path(temp) / "dataset"
         try:
             for archive in archives:
-                states, actions, task, fps, names = read_episode(archive)
-                videos = [cv2.VideoCapture(str(archive.parent / f"{camera}.mp4")) for camera in CAMERAS]
+                states, actions, task, fps, names = read_episode(archive) # Read episode and get numerical data (states are curernt joint angles, actions are target joint angles, task is prompt)
+                videos = [cv2.VideoCapture(str(archive.parent / f"{camera}.mp4")) for camera in CAMERAS] # Opens the corresponding videos
+
                 try:
+                    # Checks if videos opened
                     if not all(video.isOpened() for video in videos):
                         raise ValueError(f"{archive.parent}: cannot open both camera videos.")
+
+                    # Loops through all states and actions and maintains an index
                     for i, (state, action) in enumerate(zip(states, actions)):
-                        frame = {STATE: state, "action": action, "task": task}
+                        frame = {STATE: state, "action": action, "task": task} # Adds numerical info to a dictionary
+
+                        # Loops through all camera views
                         for camera, video in zip(CAMERAS, videos):
-                            ok, bgr = video.read()
+                            ok, bgr = video.read() # Reads the next frame (ok is true if successfully read, bgr is the image itself, in bgr format)
+
                             if not ok:
                                 raise ValueError(f"{archive.parent}: {camera}.mp4 is missing frame {i}.")
-                            frame[f"observation.images.{camera}"] = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                            
+                            frame[f"observation.images.{camera}"] = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB) # Adds the frame to the dictionary
+
+                        # For first pass
                         if dataset is None:
-                            joints = {"dtype": "float32", "shape": (6,), "names": names}
-                            features = {STATE: joints.copy(), "action": joints.copy()}
+                            joints = {"dtype": "float32", "shape": (6,), "names": names} # Joint info
+                            features = {STATE: joints.copy(), "action": joints.copy()} # Adds joing features for state and action
+
+                            # Adds camera features for each view
                             for camera in CAMERAS:
                                 key = f"observation.images.{camera}"
                                 features[key] = {
@@ -70,21 +86,24 @@ def convert(archives, output):
                                     "shape": frame[key].shape,
                                     "names": ["height", "width", "channels"],
                                 }
-                            dataset = LeRobotDataset.create(
-                                repo_id=REPO_ID, root=staged, fps=fps, features=features,
-                                robot_type="so101_follower", vcodec="h264",
-                            )
+
+                            dataset = LeRobotDataset.create(repo_id=REPO_ID, root=staged, fps=fps, features=features, robot_type="so101_follower", vcodec="h264") # Creates the lerobot dataset format with all info
+
                         if i == 0 and (dataset.fps != fps or dataset.features[STATE]["names"] != names):
                             raise ValueError(f"{archive}: frame rate or joint order differs across episodes.")
-                        dataset.add_frame(frame)
+                        
+                        dataset.add_frame(frame) # Finally add the current frame to the dataset
+
+                    # Checks for any extra frames
                     for camera, video in zip(CAMERAS, videos):
                         if video.read()[0]:
                             raise ValueError(f"{archive.parent}: {camera}.mp4 has extra frames.")
                 finally:
                     for video in videos:
-                        video.release()
-                dataset.save_episode(parallel_encoding=False)
-                counts[task] += 1
+                        video.release() # Closes videos
+
+                dataset.save_episode(parallel_encoding=False) # Saves the whole episode
+                counts[task] += 1 # This tracks how many episodes of each prompt there are
                 print(f"Converted {archive.parent.name} | {task} | {len(states)} frames", flush=True)
         finally:
             if dataset is not None:
