@@ -6,3 +6,4 @@ __pycache__/
 /outputs/
 /train_v1_with_language_vision_layers/
 /train_v2_with_language_vision_layers/
+/Best Checkpoints/
