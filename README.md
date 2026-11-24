@@ -1,1 +1,1 @@
-*Cube Pickup with Custom Fine Tuned SmolVLA Model
+*Cube Pickup with Custom Fine Tuned SmolVLA Model*
